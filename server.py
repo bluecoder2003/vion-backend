@@ -1,5 +1,4 @@
-from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from kokoro import KPipeline
 
@@ -26,6 +25,7 @@ def split_dialogue(text):
 
     for part in parts:
         part = part.strip()
+
         if not part:
             continue
 
@@ -37,40 +37,31 @@ def split_dialogue(text):
     return segments
 
 
-def style_text(role, text):
-    if role == "dialogue":
-        # add slight emphasis to dialogue
-        return f"... {text} ..."
-    return text
+@app.websocket("/stream")
+async def stream_audio(ws: WebSocket):
 
+    await ws.accept()
 
-@app.get("/generate")
-def generate(text: str):
+    text = await ws.receive_text()
 
     segments = split_dialogue(text)
 
-    audio_chunks = []
-
     for role, segment in segments:
 
-        styled = style_text(role, segment)
-
         try:
-            generator = pipeline(styled, voice="af_heart")
+            generator = pipeline(segment, voice="af_heart")
 
             for _, _, audio in generator:
-                audio_chunks.append(np.array(audio))
+
+                audio_np = np.array(audio)
+
+                buffer = io.BytesIO()
+                write(buffer, 24000, audio_np)
+                buffer.seek(0)
+
+                await ws.send_bytes(buffer.read())
 
         except Exception as e:
-            print("TTS failed:", e)
+            print("TTS error:", e)
 
-    if len(audio_chunks) == 0:
-        return {"error": "No audio generated"}
-
-    full_audio = np.concatenate(audio_chunks)
-
-    buffer = io.BytesIO()
-    write(buffer, 24000, full_audio)
-    buffer.seek(0)
-
-    return StreamingResponse(buffer, media_type="audio/wav")
+    await ws.close()
